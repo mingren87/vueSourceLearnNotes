@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Vue 实例挂载的实现</title>
+</head>
+<body>
+<pre>
+    <b>$mount src/platform/web/entry-runtime-with-compiler.js 文件中定义</b>
+
+
+
+</pre>
+
+
+<script>
+//  \src\platforms\web\util\index.js
+export function query (el: string | Element): Element {
+  if (typeof el === 'string') {
+    const selected = document.querySelector(el)
+    if (!selected) {
+      process.env.NODE_ENV !== 'production' && warn(
+        'Cannot find element: ' + el
+      )
+      return document.createElement('div')
+    }
+    return selected
+  } else {
+    return el
+  }
+}
+
+</script>
+<script>
+
+const mount = Vue.prototype.$mount
+Vue.prototype.$mount = function (
+  el?: string | Element,
+  hydrating?: boolean
+): Component {
+  el = el && query(el)
+
+    /* istanbul ignore if */
+  if (el === document.body || el === document.documentElement) { // 做了层判断DOM不可以直接挂载到html或者body上（因为挂载会覆盖）
+    process.env.NODE_ENV !== 'production' && warn(
+      `Do not mount Vue to <html> or <body> - mount to normal elements instead.`
+    )
+    return this
+  }
+
+  const options = this.$options
+  // resolve template/el and convert to render function
+  if (!options.render) { // 如果有render函数直接调用，如果没有定义render方法，则会把 el或者template字符串转换成render方法
+                         // Vue 的组件的渲染最终都需要 render 方法，无论我们是用单文件 .vue方式开发组件，还是写了el或者template属性，最终都会转换成render方法
+    let template = options.template
+    if (template) {
+      if (typeof template === 'string') {
+        if (template.charAt(0) === '#') {
+          template = idToTemplate(template)
+            /* istanbul ignore if */
+          if (process.env.NODE_ENV !== 'production' && !template) {
+            warn(
+              `Template element not found or is empty: ${options.template}`,
+              this
+            )
+          }
+        }
+      } else if (template.nodeType) {
+        template = template.innerHTML
+      } else {
+        if (process.env.NODE_ENV !== 'production') {
+          warn('invalid template option:' + template, this)
+        }
+        return this
+      }
+    } else if (el) {
+      template = getOuterHTML(el)
+    }
+    if (template) {
+        /* istanbul ignore if */
+      if (process.env.NODE_ENV !== 'production' && config.performance && mark) {
+        mark('compile')
+      }
+
+      //    在线编译 是通过 compileToFunctions 实现的
+      const { render, staticRenderFns } = compileToFunctions(template, {
+        shouldDecodeNewlines,
+        shouldDecodeNewlinesForHref,
+        delimiters: options.delimiters,
+        comments: options.comments
+      }, this)
+      options.render = render
+      options.staticRenderFns = staticRenderFns
+
+        /* istanbul ignore if */
+      if (process.env.NODE_ENV !== 'production' && config.performance && mark) {
+        mark('compile end')
+        measure(`vue ${this._name} compile`, 'compile', 'compile end')
+      }
+    }
+  }
+  return mount.call(this, el, hydrating) // 最后调用原先原型上的$mount方法挂载
+
+}
+
+//    原先原型上的 $mount 方法在 src/platform/web/runtime/index.js 中定义，
+//    之所以这么设计完全是为了复用，因为它是可以被 runtime only 版本的 Vue 直接使用的。
+
+// public mount method
+Vue.prototype.$mount = function (
+  el?: string | Element, // 表示挂载的元素，如果是字符串在浏览器环境下会调用query方法转换成DOM对象的
+  hydrating?: boolean // 服务端渲染相关
+): Component {
+  el = el && inBrowser ? query(el) : undefined
+  return mountComponent(this, el, hydrating) // $mount方法实际上会去调用 mountComponent 方法
+}
+
+//  mountComponent方法 定义在 src/core/instance/lifecycle.js中
+
+export function mountComponent (
+  vm: Component,
+  el: ?Element,
+  hydrating?: boolean
+): Component {
+  vm.$el = el
+  if (!vm.$options.render) {
+    vm.$options.render = createEmptyVNode
+    if (process.env.NODE_ENV !== 'production') {
+        /* istanbul ignore if */
+      if ((vm.$options.template && vm.$options.template.charAt(0) !== '#') ||
+        vm.$options.el || el) {
+        // 在工作中命中这些警告时，原因是没有正确的生成reader函数，因为vue最终只认这个render函数
+
+        warn(
+          'You are using the runtime-only build of Vue where the template ' +
+          'compiler is not available. Either pre-compile the templates into ' +
+          'render functions, or use the compiler-included build.',
+          vm
+        )
+      } else {
+        warn(
+          'Failed to mount component: template or render function not defined.',
+          vm
+        )
+      }
+    }
+  }
+  callHook(vm, 'beforeMount')
+
+  let updateComponent
+    /* istanbul ignore if */
+  if (process.env.NODE_ENV !== 'production' && config.performance && mark) {
+    updateComponent = () => {
+      const name = vm._name
+      const id = vm._uid
+      const startTag = `vue-perf-start:${id}`
+      const endTag = `vue-perf-end:${id}`
+
+      mark(startTag)
+      const vnode = vm._render()
+      mark(endTag)
+      measure(`vue ${name} render`, startTag, endTag)
+
+      mark(startTag)
+      vm._update(vnode, hydrating)
+      mark(endTag)
+      measure(`vue ${name} patch`, startTag, endTag)
+    }
+  } else {
+    updateComponent = () => {
+      vm._update(vm._render(), hydrating) // vm._render 方法先 生成虚拟Node，最终调用vm._update更新 DOM。
+    }
+  }
+
+  // we set this to vm._watcher inside the watcher's constructor
+  // since the watcher's initial patch may call $forceUpdate (e.g. inside child
+  // component's mounted hook), which relies on vm._watcher being already defined
+
+  // 渲染Watcher（跟响应式原理强相关，观察者模式）
+  new Watcher(vm, updateComponent, noop, { // mountComponent 核心就是先实例化一个渲染Watcher，
+                                           // 在它的回调函数中会调用 updateComponent 方法
+    before () {
+      if (vm._isMounted) {
+        callHook(vm, 'beforeUpdate')
+      }
+    }
+  }, true /* isRenderWatcher */)
+  hydrating = false
+
+  // manually mounted instance, call mounted on self
+  // mounted is called for render-created child components in its inserted hook
+
+//  函数最后判断为根节点的时候设置vm._isMounted 为 true，
+//  表示这个实例已经挂载了，同时执行 mounted 钩子函数。（这里注意vm.$vnode表示Vue实例的父虚拟Node，所以它为Null则表示当前是根Vue的实例）
+
+  if (vm.$vnode == null) {
+    vm._isMounted = true
+    callHook(vm, 'mounted')
+  }
+  return vm
+}
+
+//总结整个 $mount compiler实现过程:
+//    1.首先要拿到render函数
+//    2.然后调用 mountComponent 方法，
+//    3.mountComponent 方法主要是定义了函数 updateComponent（实际上是个渲染watcher）
+//    4. 为什么要通过Watcher呢？（因为updateComponent实际上是执行了一次真实的渲染，除了我们首次，未来也要走这个函数，对视图进行更新。 它是一个从监听到执行的过程）
+
+</script>
+</body>
+</html>
