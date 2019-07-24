@@ -12,8 +12,8 @@
 
 </pre>
 
-
 <script>
+
 //  \src\platforms\web\util\index.js
 export function query (el: string | Element): Element {
   if (typeof el === 'string') {
@@ -30,10 +30,7 @@ export function query (el: string | Element): Element {
   }
 }
 
-</script>
-<script>
-
-const mount = Vue.prototype.$mount
+const mount = Vue.prototype.$mount // 先缓存了原型上的 $mount 方法 再重新定义该方法
 Vue.prototype.$mount = function (
   el?: string | Element,
   hydrating?: boolean
@@ -41,6 +38,7 @@ Vue.prototype.$mount = function (
   el = el && query(el)
 
     /* istanbul ignore if */
+  //  el 做了限制，Vue 不能挂载在 body、html 这样的根节点上
   if (el === document.body || el === document.documentElement) { // 做了层判断DOM不可以直接挂载到html或者body上（因为挂载会覆盖）
     process.env.NODE_ENV !== 'production' && warn(
       `Do not mount Vue to <html> or <body> - mount to normal elements instead.`
@@ -82,7 +80,7 @@ Vue.prototype.$mount = function (
         mark('compile')
       }
 
-      //    在线编译 是通过 compileToFunctions 实现的
+      //  在线编译 是通过 compileToFunctions 实现的
       const { render, staticRenderFns } = compileToFunctions(template, {
         shouldDecodeNewlines,
         shouldDecodeNewlinesForHref,
@@ -203,7 +201,7 @@ export function mountComponent (
 //总结整个 $mount compiler实现过程:
 //    1.首先要拿到render函数
 //    2.然后调用 mountComponent 方法，
-//    3.mountComponent 方法主要是定义了函数 updateComponent（实际上是个渲染watcher）
+//    3.mountComponent 方法主要作用是 实例化一个渲染Watcher，在它的回调函数中会调用updateComponent 方法，在此方法中调用vm._render方法先生成虚拟Node，最终调用vm._update 更新 DOM
 //    4. 为什么要通过Watcher呢？（因为updateComponent实际上是执行了一次真实的渲染，除了我们首次，未来也要走这个函数，对视图进行更新。 它是一个从监听到执行的过程）
 
 </script>

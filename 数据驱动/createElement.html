@@ -14,7 +14,7 @@
     // wrapper function for providing a more flexible interface
     // without getting yelled at by flow
 
-//    createElement 方法实际上是对 _createElement 方法的封装(就是对参数做处理)
+//    createElement 方法实际上是对 _createElement 方法的封装(对参数做处理)
 //    它允许传入的参数更加灵活，在处理这些参数后，调用真正创建 VNode 的函数 _createElement
     export function createElement (
       context: Component,
@@ -32,7 +32,7 @@
       if (isTrue(alwaysNormalize)) {
         normalizationType = ALWAYS_NORMALIZE
       }
-      // 参数处理完成后调用 createElement 创建vnode
+      // 参数处理完成后调用 _createElement 创建vnode
       return _createElement(context, tag, data, children, normalizationType)
     }
 
@@ -88,6 +88,8 @@
       } else if (normalizationType === SIMPLE_NORMALIZE) {
         children = simpleNormalizeChildren(children)
       }
+
+      // 规范化 children 后，接下来会去创建一个 VNode 的实例
       let vnode, ns
       if (typeof tag === 'string') {
         let Ctor
