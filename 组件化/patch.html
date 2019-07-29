@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>patch</title>
+</head>
+<body>
+<pre>
+    学习脉络：
+        1.了解组件patch的整体流程
+        2.了解组件patch流程中的activeInstance，vm.$vnode,vm._vnode 等
+        3.了解嵌套组件的插入顺序
+
+    当我们通过 createComponent 创建了组件 VNode 接下来会走到 vm._update，执行 vm.__patch__ 去把 VNode 转换成真正的 DOM 节点。
+    但是这针对一个普通的 VNode 节点， 接下来我们分析组件的VNode
+
+    patch 的过程会调用 createElm 创建元素节点
+
+    整个 patch 的过程就是一个深度遍历的过程
+
+    在完成组件的整个 patch 过程后，最后执行 insert(parentElm, vnode.elm, refElm) 完成组件的 DOM 插入，
+    如果组件 patch 过程中又创建了子组件，那么 DOM 的插入顺序是先子后父
+
+总结：整个 patch 过程实际上是个 深度遍历 的过程
+    1. patch 的过程会调用 createElm 创建元素节点，因为是组件类型，因此会调用 createComponent 方法
+    2.createComponent 方法中就会判断 vnode.data 中有没有hook ，以及 vnode.data 中有没有 init 方法，如果有的话则执行 init 方法
+        1.在执行 createComponent 方法时，就会执行 installComponentHooks 方法就会安装组件的钩子函数
+    3. 组件的（hooks中） init 钩子函数执行是通过 createComponentInstanceForVnode 返回一个子组件的 Vue 实例
+        1.createComponentInstanceForVnode 传入两个参数，一个是组件的 vnode，另一个是 activeInstance
+        2.createComponentInstanceForVnode 函数中，传入的参数 vnode 是组件的vnode（占位符vnode），parent 指的是当前 vm 的实例
+        3.在函数内部中，执行 new vnode.componentOptions.Ctor(options) 这里的 vnode.componentOptions.Ctor 对应的就是子组件的构造函数（new Sub(options)）
+            1.在执行createComponent 方法时，我们创建了一个继承于Vue的一个构造器 Sub
+            2.在创建 VNode 的时候，我们把 const vnode = new VNode(
+                                          `vue-component-${Ctor.cid}${name ? `-${name}` : ''}`,
+                                          data, undefined, undefined, undefined, context,
+                                          { Ctor, propsData, listeners, tag, children }, // Ctor 相当于一个组件的构造器
+                                          asyncFactory
+                                        )
+
+        4.new vnode.componentOptions.Ctor(options) 就相当于 执行了 Sub 的构造函数 （子组件的构造函数 const Sub = function VueComponent (options) {
+  this._init(options)}）并执行了构造函数中的 _init 方法（相当于回到了Vue的初始化，因为子组件的构造器就是继承于Vue的构造器，因此又执行了Vue一系列的初始化操作）
+        重新执行 _init 时（普通节点和组件节点有什么不同呢？）
+            1.首先就是 merge options 因为options._isComponent 为true， 所以就会执行 initInternalComponent 方法
+            2.initInternalComponent 方法中 重点是 opts.parent = options.parent、opts._parentVnode = parentVnode（对子组件的实例化过程先会调用 initInternalComponent(vm, options) 合并 options，把 parent 存储在 vm.$options 中，在 $mount 之前会调用 initLifecycle(vm)）
+
+        5. 接下来在 _init 中的 initLifecycle 方法 (通过该方法建立起来了父子组件的关系)
+            1.initLifecycle 方法中 activeInstance 作用就是保持当前上下文的 Vue 实例，它是在 lifecycle 模块的全局变量
+            2.activeInstance 的赋值是在 updata 时执行的，我们每次调用 updata 时，我们都会把当前 vm 实例 赋值给 activeInstance，同时 用我们的 prevActiveInstance 去记录 activeInstance（作用就是 prevActiveInstance 变量保存父组件实例， 而 activeInstance 保存当前的 vm 实例）
+            3.initLifecycle 方法中 将当前组件的实例（子组件的实例） push 到 父组件实例的 $chlidrend 中，同时将子组件的 $parent（vm.$parent） 指向 父组件实例(vm.$parent 就是用来保留当前 vm 的父实例，并且通过 parent.$children.push(vm) 来把当前的 vm 存储到父实例的 $children 中)
+
+        6.最后的 init 方法 的 if (vm.$options.el) { 这个逻辑是走不到的 （ 因为组件vm.$options 中 并没有绑定 el，所以 组件的 init 返回的是 子组件的 Vue 实例）
+                                vm.$mount(vm.$options.el)
+                              }
+
+        7.然后就会回到我们的 createComponentInstanceForVnode 方法，实际上该方法就是返回了一个子组件的 Vue 实例
+
+    4.通过 child.$mount 手动调用 $mount 方法挂载子组件，之后就会执行 mountComponent 方法 （如果options中没有定义render方法，就直接执行 mount.call 指向 mountComponent 方法 ）
+        1.执行了 mountComponent 方法中的 render 方法，实际上就是生成了一个 VNode ，接下来就会执行 mountComponent 方法中的渲染 Watcher ，走子组件的渲染 Watcher 或者 走子组件的 vm._update(vm._render(), hydrating)
+        2. 子组件的 _render 方法, 我们先拿到 父组件的_parentVnode(占位符VNode)，然后赋值给 vm.$vnode (实际上就是占位符的vnode)，之后调用 render.call 生成一个渲染 vnode ，最终 渲染 vnode.parent 会指向我们的占位符 vnode （渲染vnode的属性parent会指向我们 ）
+        3.执行完 _render 方法后，返回给我们一个渲染vnode
+    5.render之后调用 update() 方法
+        1. 在 update 方法中 传入的 vnode（渲染vnode实际上是 整个组件的根VNode）；
+        2. 当渲染子组件的时候， prevActiveInstance 变量保存父组件实例， 而 activeInstance 保存子组件的 vm 实例 （作用就是保证父子组件实例的关系）
+        3.在 update 方法中 调用 patch 方法， patch 方法的第一个参数 oldVnode 是 undifend ，因此我们执行 createElm 方法 传入两个参数 1.当前渲染的vnode  2.insertedVnodeQueue
+        4.调用 createElm 方法（按照过去流程走一遍 判断 createComponent），创建一个空的 DOM 节点，然后执行 insert 方法插入 DOM 节点（但是在执行insert方法时， 参数parentElm为空，因此不能进行插入 DOM 操作）
+        5.实际上 组件的插入 DOM 操作 是在我们的 createComponent 方法中，createComponent 方法中会执行组件的 _init方法，并且会执行一系列操作; 这个流程会最终完成整个组件的 patch ，当 patch 完成后就会执行两个函数（initComponent 和 insert）， 当执行 initComponent 的时候 （vnode.elm = vnode.componentInstance.$el ） 会将我们的 vnode.componentInstance.$el 的值返回给我们的 vnode.elm （因为在我们执行 vm.__patch__ 的时候它会把结果赋值给 vm.$el），当执行完 initComponent 的时候， insert 方法的参数 parentElm 是有值的， 因此就可以执行 DOM 的插入操作
+        6.整个组件的插入顺序，应该是先子后父的（因为在执行组件的 createComponent 方法的时候，实际上又会递归的执行一系列操作最终到patch，如果又发现组件，那么会再次执行 一系列操作直到patch，因此子组件会先于父组件进行DOM的插入操作）
+
+</pre>
+<script>
+//    createElm 方法定义在 src/core/vdom/patch.js 中 （創建VNode）
+function createElm(vnode, // 组件渲染的 vnode
+                   insertedVnodeQueue,
+                   parentElm,
+                   refElm,
+                   nested,
+                   ownerArray,
+                   index) {
+  // ...
+  if (createComponent(vnode, insertedVnodeQueue, parentElm, refElm)) {
+    return
+  }
+
+  const data = vnode.data
+  const children = vnode.children
+  const tag = vnode.tag
+  if (isDef(tag)) {
+    // ...
+
+    vnode.elm = vnode.ns
+      ? nodeOps.createElementNS(vnode.ns, tag)
+      : nodeOps.createElement(tag, vnode)
+    setScope(vnode) // 先创建一个父节点占位符
+
+      /* istanbul ignore if */
+    if (__WEEX__) {
+      // ...
+    } else {
+      createChildren(vnode, children, insertedVnodeQueue)
+      if (isDef(data)) {
+        invokeCreateHooks(vnode, insertedVnodeQueue)
+      }
+      insert(parentElm, vnode.elm, refElm)
+    }
+
+//    遍历所有子 VNode 递归调用 createElm
+  } else if (isTrue(vnode.isComment)) {
+    // 如果遇到子 VNode 是一个组件的 VNode，那么就重复 createComment - patch 的全过程，再次实例化子组件的 VNode
+    vnode.elm = nodeOps.createComment(vnode.text)
+    insert(parentElm, vnode.elm, refElm)
+  } else {
+    vnode.elm = nodeOps.createTextNode(vnode.text)
+    insert(parentElm, vnode.elm, refElm)
+  }
+}
+
+//  patch 中的 createComponent 方法
+function createComponent (vnode, insertedVnodeQueue, parentElm, refElm) {
+  let i = vnode.data // vnode是一个组件VNode，那么条件会满足，并且得到i就是 init 钩子函数
+  // 在创建组件 VNode 的时候合并钩子函数中就包含 init 钩子函数
+  if (isDef(i)) {
+    const isReactivated = isDef(vnode.componentInstance) && i.keepAlive
+    // 当我们 创建VNode时 就会执行 installComponentHooks 方法就会安装组件的钩子函数
+    if (isDef(i = i.hook) && isDef(i = i.init)) { // 判断vnode.data中有没有hook，并且有没有init，若有执行init方法
+      i(vnode, false /* hydrating */)
+    }
+    // 执行完 init 的时候，会完成对组件整个的patch操作
+
+    // 当所有的 patch 都结束以后
+    if (isDef(vnode.componentInstance)) {
+      initComponent(vnode, insertedVnodeQueue)
+      insert(parentElm, vnode.elm, refElm)
+      if (isTrue(isReactivated)) {
+        reactivateComponent(vnode, insertedVnodeQueue, parentElm, refElm)
+      }
+      return true
+    }
+  }
+}
+
+
+//  创建组件的 createComponent 方法
+const componentVNodeHooks = {
+  init (vnode: VNodeWithData, hydrating: boolean): ?boolean {
+    if (
+      vnode.componentInstance &&
+      !vnode.componentInstance._isDestroyed &&
+      vnode.data.keepAlive
+    ) {
+      // kept-alive components, treat as a patch
+      const mountedNode: any = vnode // work around flow
+      componentVNodeHooks.prepatch(mountedNode, mountedNode)
+    } else {
+      // createComponentInstanceForVnode 返回值相当于一个 子组件的 vm 实例
+      const child = vnode.componentInstance = createComponentInstanceForVnode(
+        vnode,
+        activeInstance
+      )
+      // 手动调用 $mount 方法挂载子组件
+      child.$mount(hydrating ? vnode.elm : undefined, hydrating)
+    }
+  },
+
+  prepatch (oldVnode: MountedComponentVNode, vnode: MountedComponentVNode) {
+    const options = vnode.componentOptions
+    const child = vnode.componentInstance = oldVnode.componentInstance
+    updateChildComponent(
+      child,
+      options.propsData, // updated props
+      options.listeners, // updated listeners
+      vnode, // new parent vnode
+      options.children // new children
+    )
+  },
+
+  insert (vnode: MountedComponentVNode) {
+    const { context, componentInstance } = vnode
+    if (!componentInstance._isMounted) {
+      componentInstance._isMounted = true
+      callHook(componentInstance, 'mounted')
+    }
+    if (vnode.data.keepAlive) {
+      if (context._isMounted) {
+        // vue-router#1212
+        // During updates, a kept-alive component's child components may
+        // change, so directly walking the tree here may call activated hooks
+        // on incorrect children. Instead we push them into a queue which will
+        // be processed after the whole patch process ended.
+        queueActivatedComponent(componentInstance)
+      } else {
+        activateChildComponent(componentInstance, true /* direct */)
+      }
+    }
+  },
+
+  destroy (vnode: MountedComponentVNode) {
+    const { componentInstance } = vnode
+    if (!componentInstance._isDestroyed) {
+      if (!vnode.data.keepAlive) {
+        componentInstance.$destroy()
+      } else {
+        deactivateChildComponent(componentInstance, true /* direct */)
+      }
+    }
+  }
+}
+
+const hooksToMerge = Object.keys(componentVNodeHooks)
+
+export function createComponent (
+  Ctor: Class<Component> | Function | Object | void,
+  data: ?VNodeData,
+  context: Component,
+  children: ?Array<VNode>,
+  tag?: string
+): VNode | Array<VNode> | void {
+  if (isUndef(Ctor)) {
+    return
+  }
+
+  const baseCtor = context.$options._base
+
+  // plain options object: turn it into a constructor
+  if (isObject(Ctor)) {
+    Ctor = baseCtor.extend(Ctor)
+  }
+
+  // if at this stage it's not a constructor or an async component factory,
+  // reject.
+  if (typeof Ctor !== 'function') {
+    if (process.env.NODE_ENV !== 'production') {
+      warn(`Invalid Component definition: ${String(Ctor)}`, context)
+    }
+    return
+  }
+
+  // async component
+  let asyncFactory
+  if (isUndef(Ctor.cid)) {
+    asyncFactory = Ctor
+    Ctor = resolveAsyncComponent(asyncFactory, baseCtor)
+    if (Ctor === undefined) {
+      // return a placeholder node for async component, which is rendered
+      // as a comment node but preserves all the raw information for the node.
+      // the information will be used for async server-rendering and hydration.
+      return createAsyncPlaceholder(
+        asyncFactory,
+        data,
+        context,
+        children,
+        tag
+      )
+    }
+  }
+
+  data = data || {}
+
+  // resolve constructor options in case global mixins are applied after
+  // component constructor creation
+  resolveConstructorOptions(Ctor)
+
+  // transform component v-model data into props & events
+  if (isDef(data.model)) {
+    transformModel(Ctor.options, data)
+  }
+
+  // extract props
+  const propsData = extractPropsFromVNodeData(data, Ctor, tag)
+
+  // functional component
+  if (isTrue(Ctor.options.functional)) {
+    return createFunctionalComponent(Ctor, propsData, data, context, children)
+  }
+
+  // extract listeners, since these needs to be treated as
+  // child component listeners instead of DOM listeners
+  const listeners = data.on
+  // replace with listeners with .native modifier
+  // so it gets processed during parent component patch.
+  data.on = data.nativeOn
+
+  if (isTrue(Ctor.options.abstract)) {
+    // abstract components do not keep anything
+    // other than props & listeners & slot
+
+    // work around flow
+    const slot = data.slot
+    data = {}
+    if (slot) {
+      data.slot = slot
+    }
+  }
+
+  installComponentHooks(data) // 在子组件中安装钩子函数,会将 ComponentHooks 中阶段的方法 挂载在VNode中的data.hook上
+
+  // return a placeholder vnode
+  const name = Ctor.options.name || tag
+  const vnode = new VNode(
+    `vue-component-${Ctor.cid}${name ? `-${name}` : ''}`,
+    data, undefined, undefined, undefined, context,
+    { Ctor, propsData, listeners, tag, children },
+    asyncFactory
+  )
+
+  // Weex specific: invoke recycle-list optimized @render function for
+  // extracting cell-slot template.
+  // https://github.com/Hanks10100/weex-native-directive/tree/master/component
+    /* istanbul ignore if */
+  if (__WEEX__ && isRecyclableComponent(vnode)) {
+    return renderRecyclableComponentTemplate(vnode)
+  }
+
+  return vnode
+}
+
+function installComponentHooks (data: VNodeData) {
+  const hooks = data.hook || (data.hook = {})
+  for (let i = 0; i < hooksToMerge.length; i++) {
+    const key = hooksToMerge[i]
+    const existing = hooks[key]
+    const toMerge = componentVNodeHooks[key]
+    if (existing !== toMerge && !(existing && existing._merged)) {
+      hooks[key] = existing ? mergeHook(toMerge, existing) : toMerge
+    }
+  }
+}
+
+function mergeHook (f1: any, f2: any): Function {
+  const merged = (a, b) => {
+    // flow complains about extra args which is why we use any
+    f1(a, b)
+    f2(a, b)
+  }
+  merged._merged = true
+  return merged
+}
+
+// transform component v-model info (value and callback) into
+// prop and event handler respectively.
+function transformModel (options, data: any) {
+  const prop = (options.model && options.model.prop) || 'value'
+  const event = (options.model && options.model.event) || 'input'
+  ;(data.attrs || (data.attrs = {}))[prop] = data.model.value
+  const on = data.on || (data.on = {})
+  const existing = on[event]
+  const callback = data.model.callback
+  if (isDef(existing)) {
+    if (
+      Array.isArray(existing)
+        ? existing.indexOf(callback) === -1
+        : existing !== callback
+    ) {
+      on[event] = [callback].concat(existing)
+    }
+  } else {
+    on[event] = callback
+  }
+}
+
+
+//  createComponentInstanceForVnode 的实现
+export function createComponentInstanceForVnode (
+  vnode: any, // we know it's MountedComponentVNode but flow doesn't
+  parent: any, // activeInstance in lifecycle state
+): Component {
+  const options: InternalComponentOptions = {
+    _isComponent: true, // _isComponent 为 true 表示它是一个组件
+    _parentVnode: vnode, // 父VNode（占位符VNode）
+    parent // 实际上是当前 vm 的一个实例
+  }
+  // check inline-template render functions
+  const inlineTemplate = vnode.data.inlineTemplate
+  if (isDef(inlineTemplate)) {
+    options.render = inlineTemplate.render
+    options.staticRenderFns = inlineTemplate.staticRenderFns
+  }
+  return new vnode.componentOptions.Ctor(options)
+  // 实际上执行了子组件 Sub 的构造函数
+  // new Sub(options) 这里有几个关键参数要注意几个点，
+  // _isComponent 为 true 表示它是一个组件，parent 表示当前激活的组件实例
+
+  // 所以子组件的实例化实际上就是在这个时机执行，代码在 src/core/instance/init.js
+}
+
+//总结：整个 patch 过程实际上是个 深度遍历 的过程
+//    1. patch 的过程会调用 createElm 创建元素节点，因为是组件类型，因此会调用 createComponent 方法
+//    2.createComponent 方法中就会判断 vnode.data 中有没有hook ，以及 vnode.data 中有没有 init 方法，如果有的话则执行 init 方法
+//        1.在执行 createComponent 方法时，就会执行 installComponentHooks 方法就会安装组件的钩子函数
+//    3. 组件的（hooks中） init 钩子函数执行是通过 createComponentInstanceForVnode 返回一个子组件的 Vue 实例
+//        1.createComponentInstanceForVnode 传入两个参数，一个是组件的 vnode，另一个是 activeInstance
+//        2.createComponentInstanceForVnode 函数中，传入的参数 vnode 是组件的vnode（占位符vnode），parent 指的是当前 vm 的实例
+//        3.在函数内部中，执行 new vnode.componentOptions.Ctor(options) 这里的 vnode.componentOptions.Ctor 对应的就是子组件的构造函数（new Sub(options)）
+//            1.在执行createComponent 方法时，我们创建了一个继承于Vue的一个构造器 Sub
+//            2.在创建 VNode 的时候，我们把 const vnode = new VNode(
+//                                          `vue-component-${Ctor.cid}${name ? `-${name}` : ''}`,
+//                                          data, undefined, undefined, undefined, context,
+//                                          { Ctor, propsData, listeners, tag, children }, // Ctor 相当于一个组件的构造器
+//                                          asyncFactory
+//                                        )
+//
+//        4.new vnode.componentOptions.Ctor(options) 就相当于 执行了 Sub 的构造函数 （子组件的构造函数 const Sub = function VueComponent (options) {
+//  this._init(options)}）并执行了构造函数中的 _init 方法（相当于回到了Vue的初始化，因为子组件的构造器就是继承于Vue的构造器，因此又执行了Vue一系列的初始化操作）
+//        重新执行 _init 时（普通节点和组件节点有什么不同呢？）
+//            1.首先就是 merge options 因为options._isComponent 为true， 所以就会执行 initInternalComponent 方法
+//            2.initInternalComponent 方法中 重点是 opts.parent = options.parent、opts._parentVnode = parentVnode（对子组件的实例化过程先会调用 initInternalComponent(vm, options) 合并 options，把 parent 存储在 vm.$options 中，在 $mount 之前会调用 initLifecycle(vm)）
+//
+//        5. 接下来在 _init 中的 initLifecycle 方法 (通过该方法建立起来了父子组件的关系)
+//            1.initLifecycle 方法中 activeInstance 作用就是保持当前上下文的 Vue 实例，它是在 lifecycle 模块的全局变量
+//            2.activeInstance 的赋值是在 updata 时执行的，我们每次调用 updata 时，我们都会把当前 vm 实例 赋值给 activeInstance，同时 用我们的 prevActiveInstance 去记录 activeInstance（作用就是 prevActiveInstance 变量保存父组件实例， 而 activeInstance 保存当前的 vm 实例）
+//            3.initLifecycle 方法中 将当前组件的实例（子组件的实例） push 到 父组件实例的 $chlidrend 中，同时将子组件的 $parent（vm.$parent） 指向 父组件实例(vm.$parent 就是用来保留当前 vm 的父实例，并且通过 parent.$children.push(vm) 来把当前的 vm 存储到父实例的 $children 中)
+//
+//        6.最后的 init 方法 的 if (vm.$options.el) { 这个逻辑是走不到的 （ 因为组件vm.$options 中 并没有绑定 el，所以 组件的 init 返回的是 子组件的 Vue 实例）
+//                                vm.$mount(vm.$options.el)
+//                              }
+//
+//        7.然后就会回到我们的 createComponentInstanceForVnode 方法，实际上该方法就是返回了一个子组件的 Vue 实例
+//
+//    4.通过 child.$mount 手动调用 $mount 方法挂载子组件，之后就会执行 mountComponent 方法 （如果options中没有定义render方法，就直接执行 mount.call 指向 mountComponent 方法 ）
+//        1.执行了 mountComponent 方法中的 render 方法，实际上就是生成了一个 VNode ，接下来就会执行 mountComponent 方法中的渲染 Watcher ，走子组件的渲染 Watcher 或者 走子组件的 vm._update(vm._render(), hydrating)
+//        2. 子组件的 _render 方法, 我们先拿到 父组件的_parentVnode(占位符VNode)，然后赋值给 vm.$vnode (实际上就是占位符的vnode)，之后调用 render.call 生成一个渲染 vnode ，最终 渲染 vnode.parent 会指向我们的占位符 vnode （渲染vnode的属性parent会指向我们 ）
+//        3.执行完 _render 方法后，返回给我们一个渲染vnode
+//    5.render之后调用 update() 方法
+//        1. 在 update 方法中 传入的 vnode（渲染vnode实际上是 整个组件的根VNode）；
+//        2. 当渲染子组件的时候， prevActiveInstance 变量保存父组件实例， 而 activeInstance 保存子组件的 vm 实例 （作用就是保证父子组件实例的关系）
+//        3.在 update 方法中 调用 patch 方法， patch 方法的第一个参数 oldVnode 是 undifend ，因此我们执行 createElm 方法 传入两个参数 1.当前渲染的vnode  2.insertedVnodeQueue
+//        4.调用 createElm 方法（按照过去流程走一遍 判断 createComponent），创建一个空的 DOM 节点，然后执行 insert 方法插入 DOM 节点（但是在执行insert方法时， 参数parentElm为空，因此不能进行插入 DOM 操作）
+//        5.实际上 组件的插入 DOM 操作 是在我们的 createComponent 方法中，createComponent 方法中会执行组件的 _init方法，并且会执行一系列操作; 这个流程会最终完成整个组件的 patch ，当 patch 完成后就会执行两个函数（initComponent 和 insert）， 当执行 initComponent 的时候 （vnode.elm = vnode.componentInstance.$el ） 会将我们的 vnode.componentInstance.$el 的值返回给我们的 vnode.elm （因为在我们执行 vm.__patch__ 的时候它会把结果赋值给 vm.$el），当执行完 initComponent 的时候， insert 方法的参数 parentElm 是有值的， 因此就可以执行 DOM 的插入操作
+//        6.整个组件的插入顺序，应该是先子后父的（因为在执行组件的 createComponent 方法的时候，实际上又会递归的执行一系列操作最终到patch，如果又发现组件，那么会再次执行 一系列操作直到patch，因此子组件会先于父组件进行DOM的插入操作）
+
+
+</script>
+</body>
+</html>
