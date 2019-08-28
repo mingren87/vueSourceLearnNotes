@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>异步组件</title>
+</head>
+<body>
+<pre>
+    异步组件
+    为了减少首屏代码体积，往往会把一些非首屏的组件设计成异步组件，按需加载
+</pre>
+<script>
+
+//    组件的注册逻辑，由于组件的定义并不是一个普通对象，
+//    所以不会执行 Vue.extend 的逻辑把它变成一个组件的构造函数，
+//    但是它仍然可以执行到 createComponent 函数 (定义在 src/core/vdom/create-component/js 中)
+
+//  异步组件 patch
+export function createComponent (
+  Ctor: Class<Component> | Function | Object | void,
+  data: ?VNodeData,
+  context: Component,
+  children: ?Array<VNode>,
+  tag?: string
+): VNode | Array<VNode> | void {
+  if (isUndef(Ctor)) {
+    return
+  }
+
+  const baseCtor = context.$options._base
+
+  // plain options object: turn it into a constructor
+  if (isObject(Ctor)) {
+    Ctor = baseCtor.extend(Ctor)
+  }
+
+  // ...
+
+  // async component
+  let asyncFactory
+  // 因为传入的是工厂函数，因此 cid 并没有值
+  if (isUndef(Ctor.cid)) {
+    asyncFactory = Ctor
+    // 第一次执行 resolveAsyncComponent，除非使用高级异步组件 0 delay
+    // 去创建了一个 loading 组件，否则返回是 undefiend
+    // 接着通过 createAsyncPlaceholder 创建一个注释节点作为占位符
+    Ctor = resolveAsyncComponent(asyncFactory, baseCtor, context)
+    if (Ctor === undefined) {
+      // return a placeholder node for async component, which is rendered
+      // as a comment node but preserves all the raw information for the node.
+      // the information will be used for async server-rendering and hydration.
+      // 生成一个注释节点
+      return createAsyncPlaceholder(
+        asyncFactory,
+        data,
+        context,
+        children,
+        tag
+      )
+    }
+  }
+}
+
+
+// resolveAsyncComponent （定义在 src/core/vdom/helpers/resolve-async-component.js 中），
+// 该函数比较复杂，因为它处理了 3 种异步组件的创建方式
+
+export function resolveAsyncComponent (
+  factory: Function,
+  baseCtor: Class<Component>,
+  context: Component
+): Class<Component> | void {
+  if (isTrue(factory.error) && isDef(factory.errorComp)) {
+    return factory.errorComp
+  }
+
+  if (isDef(factory.resolved)) {
+    return factory.resolved
+  }
+
+  if (isTrue(factory.loading) && isDef(factory.loadingComp)) {
+    return factory.loadingComp
+  }
+
+  if (isDef(factory.contexts)) {
+    // already pending
+    factory.contexts.push(context)
+  } else {
+    const contexts = factory.contexts = [context]
+    let sync = true
+
+    const forceRender = () => {
+      for (let i = 0, l = contexts.length; i < l; i++) {
+        // 遍历factory.contexts，拿到每一个调用异步组件的 vm 实例，执行 vm.$forceUpdate() 方法 （定义在 src/core/instance/lifecycle.js 中）
+        contexts[i].$forceUpdate()
+      }
+    }
+
+    // 异步组件加载成功
+    const resolve = once((res: Object | Class<Component>) => {// once是工具函数（ 作用是保证只能执行一次）
+      // cache resolved
+      // 把加载的结果 缓存到 resolved 中 此时 sync 为 false，
+      factory.resolved = ensureCtor(res, baseCtor)
+      // invoke callbacks only if this is not a synchronous resolve
+      // (async resolves are shimmed as synchronous during SSR)
+      if (!sync) {
+        // 然后执行 forceRender() 再次执行到 resolveAsyncComponent
+        // 直接返回 factory.resolved，渲染成功加载的组件
+        forceRender()
+      }
+    })
+
+    // 异步组件加载失败 || 异步组件加载超时
+
+    const reject = once(reason => {
+      process.env.NODE_ENV !== 'production' && warn(
+        `Failed to resolve async component: ${String(factory)}` +
+        (reason ? `\nReason: ${reason}` : '')
+      )
+      if (isDef(factory.errorComp)) {
+        factory.error = true
+        // forceRender() 再次执行到 resolveAsyncComponent，
+        // 然后返回 factory.errorComp，直接渲染 error 组件。
+        forceRender()
+      }
+    })
+
+    // resolve 和 reject 函数作为参数传入，组件的工厂函数通常会先发送请求去加载我们的异步组件的 JS 文件，
+    // 拿到组件定义的对象 res 后，执行 resolve(res) 逻辑
+    const res = factory(resolve, reject) // 异步加载
+
+    if (isObject(res)) {
+      if (typeof res.then === 'function') {
+        // () => Promise
+        if (isUndef(factory.resolved)) {
+          res.then(resolve, reject)
+        }
+      } else if (isDef(res.component) && typeof res.component.then === 'function') {
+        // 高级异步组件
+        res.component.then(resolve, reject)
+
+        if (isDef(res.error)) { // res.error 是否定义了 error 组件
+          factory.errorComp = ensureCtor(res.error, baseCtor) // 赋值给 factory.errorComp
+        }
+
+        if (isDef(res.loading)) { // res.loading 是否定义了 loading 组件
+          factory.loadingComp = ensureCtor(res.loading, baseCtor) // 赋值给 factory.loadingComp
+          if (res.delay === 0) {
+            // res.delay 且为 0，则设置 factory.loading = true
+            factory.loading = true
+          } else {
+            // 否则延时 delay
+            setTimeout(() => {
+              // 异步组件加载中
+              if (isUndef(factory.resolved) && isUndef(factory.error)) {
+                factory.loading = true
+                forceRender()// 返回 factory.loadingComp，渲染 loading 组件
+              }
+            }, res.delay || 200)
+          }
+        }
+
+        // 最后判断 res.timeout，如果配置了该项，
+        // 则在 res.timout 时间后，如果组件没有成功加载，执行 reject
+        if (isDef(res.timeout)) {
+          setTimeout(() => {
+            if (isUndef(factory.resolved)) {
+              reject(
+                process.env.NODE_ENV !== 'production'
+                  ? `timeout (${res.timeout}ms)`
+                  : null
+              )
+            }
+          }, res.timeout)
+        }
+      }
+    }
+
+    sync = false
+    // 当factory.loading 、 factory.loadingComp 和 factory.resolved 都不存在时
+    // 返回 undifend
+
+    // 当 factory.loading 存在时， 如果 delay 配置为 0，则这次直接渲染 loading 组件，否则则延时 delay 执行 forceRender
+    return factory.loading
+      ? factory.loadingComp
+      : factory.resolved
+  }
+}
+
+// ensureCtor 函数（ 定义在 src/core/vdom/helpers/resolve-async-component.js中 ）
+// 该函数目的是为了保证能找到异步组件 JS 定义的组件对象，
+// 并且如果它是一个普通对象，则调用 Vue.extend 把它转换成一个组件的构造函数。
+function ensureCtor (comp: any, base) {
+  if (
+    comp.__esModule ||
+    (hasSymbol && comp[Symbol.toStringTag] === 'Module')
+  ) {
+    comp = comp.default
+  }
+  return isObject(comp)
+    ? base.extend(comp)
+    : comp
+}
+
+//vm.$forceUpdate() 函数定义在 （src/core/instance/lifecycle.js）
+
+Vue.prototype.$forceUpdate = function () {
+  const vm: Component = this
+  if (vm._watcher) {
+    vm._watcher.update()
+  }
+}
+// $forceUpdate 的逻辑非常简单，就是调用渲染 watcher 的 update 方法，
+// 让渲染 watcher 对应的回调函数执行，也就是触发了组件的重新渲染。
+// 之所以这么做是因为 Vue 通常是数据驱动视图重新渲染，
+// 但是在整个异步组件加载过程中是没有数据发生变化的，所以通过执行 $forceUpdate 可以强制组件重新渲染一次。
+
+
+// createAsyncPlaceholder 函数（定义在src/core/vdom/helpers/resolve-async-components.js ）
+export function createAsyncPlaceholder (
+  factory: Function,
+  data: ?VNodeData,
+  context: Component,
+  children: ?Array<VNode>,
+  tag: ?string
+): VNode {
+  // 创建了一个占位的注释 VNode，同时把 asyncFactory 和 asyncMeta 赋值给当前 vnode
+  const node = createEmptyVNode()
+  node.asyncFactory = factory
+  node.asyncMeta = { data, context, children, tag }
+  return node
+}
+
+//当执行 forceRender 的时候，会触发组件的重新渲染，那么会再一次执行 resolveAsyncComponent，
+// 这时候就会根据不同的情况，可能返回 loading、error 或成功加载的异步组件，返回值不为 undefined，
+// 因此就走正常的组件 render、patch 过程，与组件第一次渲染流程不一样，这个时候是存在新旧 vnode 的
+
+
+//  总结：
+//      异步组件实现的本质是 2 次渲染，除了 0 delay 的高级异步组件第一次直接渲染成 loading 组件外，其它都是第一次渲染生成一个注释节点，
+//      当异步获取组件成功后，再通过 forceRender 强制重新渲染，这样就能正确渲染出我们异步加载的组件了
+
+
+
+
+</script>
+</body>
+</html>

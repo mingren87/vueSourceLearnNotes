@@ -9,6 +9,7 @@
     new Vue 的过程通常有 2 种场景
 
     一种是外部我们的代码主动调用 new Vue(options) 的方式实例化一个 Vue 对象；
+
     另一种是我们上一节分析的组件过程中内部通过 new Vue(options) 实例化子组件。
 
 
@@ -177,7 +178,110 @@ export const LIFECYCLE_HOOKS = [
   'serverPrefetch'
 ]
 
-由于组件的构造函数是通过 Vue.extend 继承自 Vue
+//  由于组件的构造函数是通过 Vue.extend 继承自 Vue 的 代码定义在 src/core/global-api/extend.js 中
+
+Vue.extend = function (extendOptions: Object): Function {
+  // ...
+  Sub.options = mergeOptions(
+    Super.options,
+    extendOptions // extendOptions 对应的就是前面定义的组件对象
+  )
+
+  // ...
+  // keep a reference to the super options at extension time.
+  // later at instantiation we can check if Super's options have
+  // been updated.
+  Sub.superOptions = Super.options
+  Sub.extendOptions = extendOptions
+  Sub.sealedOptions = extend({}, Sub.options)
+
+  // ...
+  return Sub
+}
+
+//  在子组件的初始化过程中 （代码定义在 src/core/vdom/create-component.js 中）
+
+export function createComponentInstanceForVnode (
+  vnode: any, // we know it's MountedComponentVNode but flow doesn't
+  parent: any, // activeInstance in lifecycle state
+): Component {
+  const options: InternalComponentOptions = {
+    _isComponent: true,
+    _parentVnode: vnode,
+    parent
+  }
+  // ...
+  return new vnode.componentOptions.Ctor(options)
+  // vnode.componentOptions.Ctor 就是指向 Vue.extend 的返回值 Sub，
+  // 所以 执行 new vnode.componentOptions.Ctor(options) 接着执行 this._init(options)
+}
+
+// 因为 options._isComponent 为 true，那么合并 options 的过程走到了 initInternalComponent(vm, options) 逻辑 (在 src/core/instance/init.js 中)
+
+export function initInternalComponent (vm: Component, options: InternalComponentOptions) {
+  const opts = vm.$options = Object.create(vm.constructor.options) // vm.constructor 就是子组件的构造函数 Sub，相当于 vm.$options = Object.create(Sub.options)
+  // doing this because it's faster than dynamic enumeration.
+
+  // 实例化子组件传入的子组件父 VNode 实例 parentVnode 以及 子组件的父 Vue 实例 parent 保存在 vm.$options
+  const parentVnode = options._parentVnode
+  opts.parent = options.parent
+  opts._parentVnode = parentVnode
+
+  // 保留了 parentVnode 配置中的如 propsData 等其它的属性
+  const vnodeComponentOptions = parentVnode.componentOptions
+  opts.propsData = vnodeComponentOptions.propsData
+  opts._parentListeners = vnodeComponentOptions.listeners
+  opts._renderChildren = vnodeComponentOptions.children
+  opts._componentTag = vnodeComponentOptions.tag
+
+  if (options.render) {
+    opts.render = options.render
+    opts.staticRenderFns = options.staticRenderFns
+  }
+}
+
+// 当执行 initInternalComponent(vm, options) 后 vm.$options 的结构如下：
+
+vm.$options = {
+  parent: Vue /*父Vue实例*/,
+  propsData: undefined,
+  _componentTag: undefined,
+  _parentVnode: VNode /*父VNode实例*/,
+  _renderChildren:undefined,
+  __proto__: {
+    components: { },
+    directives: { },
+    filters: { },
+    _base: function Vue(options) {
+      //...
+    },
+    _Ctor: {},
+    created: [
+      function created() {
+        console.log('parent created')
+      }, function created() {
+        console.log('child created')
+      }
+    ],
+    mounted: [
+      function mounted() {
+        console.log('child mounted')
+      }
+    ],
+    data() {
+      return {
+        msg: 'Hello Vue'
+      }
+    },
+    template: '<div>{{msg}}</div>'
+  }
+}
+
+//  总结：
+//    1.外部调用场景下的合并配置是通过 mergeOption， 并遵循一定的合并策略
+//    2.对于组件的合并是通过 initInternalComponetent（做 option 的merge ）它合并更快(相对来说更加的简单，因为没有更多的策略)
+
+
 
 
 

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>组件注册</title>
+</head>
+<body>
+<pre>
+    全局注册和局部注册
+
+
+</pre>
+<script>
+//  Vue.component 函数定义在初始化 Vue 的全局函数的时候 （代码在 src/core/global-api/assets.js 中）
+
+import { ASSET_TYPES } from 'shared/constants'
+import { isPlainObject, validateComponentName } from '../util/index'
+
+export function initAssetRegisters (Vue: GlobalAPI) {
+  /**
+   * Create asset registration methods.
+   */
+
+  // 首先 遍历 ASSET_TYPES，得到 type 后挂载到 Vue 上
+  ASSET_TYPES.forEach(type => {
+    Vue[type] = function (
+      id: string,
+      definition: Function | Object
+    ): Function | Object | void {
+      if (!definition) {
+        return this.options[type + 's'][id]
+      } else {
+          /* istanbul ignore if */
+        if (process.env.NODE_ENV !== 'production' && type === 'component') {
+          validateComponentName(id) // 对组件名称校验
+        }
+        if (type === 'component' && isPlainObject(definition)) {
+          definition.name = definition.name || id
+          definition = this.options._base.extend(definition) // 相当于 Vue.extend 把这个对象转换成一个继承于 Vue 的构造函数
+        }
+        if (type === 'directive' && typeof definition === 'function') {
+          definition = { bind: definition, update: definition }
+        }
+        this.options[type + 's'][id] = definition // 它挂载到 Vue.options.components 上
+        return definition
+      }
+    }
+  })
+}
+
+// 由于我们的每个组件的创建都是通过Vue.extend 而来的，在继承的过程中有这么一段逻辑
+// Vue.options 合并到 Sub.options，也就是组件的 options 上
+// 然后在组件的实例化阶段，会执行 merge options 逻辑，把 Sub.options.components 合并到 vm.$options.components 上
+
+Sub.options = mergeOptions(
+  Super.options,
+  extendOptions
+)
+
+//  然后在创建 vnode 的过程中，会执行 _createElement 方法 （定义在 src/core/vdom/create-element.js 中）
+
+export function _createElement (
+  context: Component,
+  tag?: string | Class<Component> | Function | Object,
+  data?: VNodeData,
+  children?: any,
+  normalizationType?: number
+): VNode | Array<VNode> {
+  // ...
+  let vnode, ns
+  if (typeof tag === 'string') {
+    let Ctor
+    ns = (context.$vnode && context.$vnode.ns) || config.getTagNamespace(tag)
+    if (config.isReservedTag(tag)) {
+      // platform built-in elements
+      vnode = new VNode(
+        config.parsePlatformTagName(tag), data, children,
+        undefined, undefined, context
+      )
+      // 当我们调用 resolveAsset(context.$options, 'components', tag) 时，即拿 vm.$options.components[tag]，
+      // 这样我们就可以在 resolveAsset 的时候拿到这个组件的构造函数，并作为 createComponent 的钩子的参数
+    } else if (isDef(Ctor = resolveAsset(context.$options, 'components', tag))) {
+      // component
+      vnode = createComponent(Ctor, data, context, children, tag)
+    } else {
+      // unknown or unlisted namespaced elements
+      // check at runtime because it may get assigned a namespace when its
+      // parent normalizes children
+      vnode = new VNode(
+        tag, data, children,
+        undefined, undefined, context
+      )
+    }
+  } else {
+    // direct component options / constructor
+    vnode = createComponent(tag, data, context, children)
+  }
+  // ...
+}
+
+
+
+
+// 常量 ASSET_TYPES （定义在 src/shared/constants.js 中）
+
+export const ASSET_TYPES = [
+  'component',
+  'directive',
+  'filter'
+]
+
+// resolveAsset 函数定义在（ 定义在src/core/utils/options.js 中 ）
+
+export function resolveAsset (
+  options: Object, // $options 表示 Vue 本身和自定义的属性
+  type: string,
+  id: string,
+  warnMissing?: boolean
+): any {
+    /* istanbul ignore if */
+  if (typeof id !== 'string') {
+    return
+  }
+  const assets = options[type] //
+  // check local registration variations first
+  if (hasOwn(assets, id)) return assets[id]
+  const camelizedId = camelize(id) // 转换成驼峰的形式
+  if (hasOwn(assets, camelizedId)) return assets[camelizedId]
+  const PascalCaseId = capitalize(camelizedId) // 在驼峰的基础上把首字母再变成大写的形式
+  if (hasOwn(assets, PascalCaseId)) return assets[PascalCaseId]
+  // fallback to prototype chain
+  const res = assets[id] || assets[camelizedId] || assets[PascalCaseId]
+  if (process.env.NODE_ENV !== 'production' && warnMissing && !res) {
+    warn(
+      'Failed to resolve ' + type.slice(0, -1) + ': ' + id,
+      options
+    )
+  }
+  return res
+}
+
+// 说明 Vue.component(id, definition) 全局注册组件的时候，id 可以是连字符、驼峰或首字母大写的形式
+
+
+//  局部注册
+
+// 在组件的 Vue 的实例化阶段有一个合并 option 的逻辑
+// 把 options 中的 components 合并到 vm.$options.components 上，
+// 这样我们就可以在 resolveAsset 的时候拿到这个组件的构造函数，并作为 createComponent 的钩子的参数
+
+// 全局注册 和 局部注册的区别 ?
+
+// 局部注册和全局注册不同的是，只有该类型的组件才可以访问局部注册的子组件，
+// 而全局注册是扩展到 Vue.options 下，所以在所有组件创建的过程中，
+// 都会从全局的 Vue.options.components 扩展到当前组件的 vm.$options.components 下，这就是全局注册的组件能被任意使用的原因
+
+
+
+</script>
+</body>
+</html>
