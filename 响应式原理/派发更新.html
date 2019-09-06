@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>派发更新</title>
+</head>
+<body>
+<pre>
+    派发更新
+</pre>
+<script>
+//    派发更新 （响应式数据依赖收集的 目的就是为了当我们修改数据的时候可以对相关的依赖派发更新）
+
+export function defineReactive (
+  obj: Object,
+  key: string,
+  val: any,
+  customSetter?: ?Function,
+  shallow?: boolean
+) {
+  const dep = new Dep()
+
+  const property = Object.getOwnPropertyDescriptor(obj, key)
+  if (property && property.configurable === false) {
+    return
+  }
+
+  // cater for pre-defined getter/setters
+  const getter = property && property.get
+  const setter = property && property.set
+  if ((!getter || setter) && arguments.length === 2) {
+    val = obj[key]
+  }
+
+  let childOb = !shallow && observe(val)
+  Object.defineProperty(obj, key, {
+    enumerable: true,
+    configurable: true,
+    // setter 部分的逻辑
+    set: function reactiveSetter (newVal) {
+      const value = getter ? getter.call(obj) : val
+        /* eslint-disable no-self-compare */
+      if (newVal === value || (newVal !== newVal && value !== value)) {
+        return
+      }
+        /* eslint-enable no-self-compare */
+      if (process.env.NODE_ENV !== 'production' && customSetter) {
+        customSetter()
+      }
+      if (setter) {
+        setter.call(obj, newVal)
+      } else {
+        val = newVal
+      }
+      childOb = !shallow && observe(newVal) // shallow 为 false 的情况，会对新设置的值变成一个响应式对象
+      dep.notify() // 通知所有的订阅者
+    }
+  })
+}
+
+//  setter 实现过程分析
+
+//  当我们在组件中对响应的数据做了修改，就会触发 setter 的逻辑，最后调用 dep.notify() 方法
+// ( Dep 的一个实例方法, 定义在 src/core/observer/dep.js 中)
+
+class Dep {
+  // ...
+  notify () {
+    const subs = this.subs.slice() // subs 也就是 Watcher 的实例数组
+    for (let i = 0, l = subs.length; i < l; i++) {
+      subs[i].update() // 调用每个 watcher 的 updata 方法 (定义在 src/core/observer/watcher.js 中)
+    }
+  }
+}
+
+class Watcher {
+  // ...
+  update () {
+      /* istanbul ignore else */
+    if (this.computed) {
+      // A computed property watcher has two modes: lazy and activated.
+      // It initializes as lazy by default, and only becomes activated when
+      // it is depended on by at least one subscriber, which is typically
+      // another computed property or a component's render function.
+      if (this.dep.subs.length === 0) {
+        // In lazy mode, we don't want to perform computations until necessary,
+        // so we simply mark the watcher as dirty. The actual computation is
+        // performed just-in-time in this.evaluate() when the computed property
+        // is accessed.
+        this.dirty = true
+      } else {
+        // In activated mode, we want to proactively perform the computation
+        // but only notify our subscribers when the value has indeed changed.
+        this.getAndInvoke(() => {
+          this.dep.notify()
+        })
+      }
+    } else if (this.sync) {
+      this.run()
+    } else {
+      // 一般组件数据更新
+      queueWatcher(this)
+    }
+  }
+}
+
+//  queueWatcher 方法（定义在 src/core/observer/scheduler.js 中）
+
+const queue: Array<Watcher> = []
+let has: { [key: number]: ?true } = {}
+let waiting = false
+let flushing = false
+/**
+ * Push a watcher into the watcher queue.
+ * Jobs with duplicate IDs will be skipped unless it's
+ * pushed when the queue is being flushed.
+ */
+export function queueWatcher (watcher: Watcher) {
+  const id = watcher.id
+  //  has 对象保证同一个 Watcher 只添加一次
+  if (has[id] == null) {
+    has[id] = true
+    if (!flushing) {
+      queue.push(watcher)
+    } else {
+      //  从后往前找，找到第一个待插入 watcher 的 id 比当前队列中 watcher 的 id 大的位置。
+      //  把 watcher 按照 id的插入到队列中，因此 queue 的长度发生了变化。
+      let i = queue.length - 1
+      while (i > index && queue[i].id > watcher.id) {
+        i--
+      }
+      queue.splice(i + 1, 0, watcher)
+    }
+    // 通过 waiting 保证对 nextTick(flushSchedulerQueue) 的调用逻辑只有一次
+    if (!waiting) {
+      waiting = true
+      nextTick(flushSchedulerQueue)
+    }
+  }
+}
+
+
+//  flushSchedulerQueue 方法 （ 定义在 src/core/observer/scheduler.js 中 ）
+
+let flushing = false
+let index = 0
+/**
+ * Flush both queues and run the watchers.
+ */
+function flushSchedulerQueue () {
+  flushing = true
+  let watcher, id
+
+  // Sort queue before flush.
+  // This ensures that:
+  // 1. Components are updated from parent to child. (because parent is always
+  //    created before the child)
+  // 2. A component's user watchers are run before its render watcher (because
+  //    user watchers are created before the render watcher)
+  // 3. If a component is destroyed during a parent component's watcher run,
+  //    its watchers can be skipped.
+
+  //  queue.sort((a, b) => a.id - b.id) 对队列做了从小到大的排序，目的是：
+
+  //  1.组件的更新由父到子；因为父组件的创建过程是先于子的，所以 watcher 的创建也是先父后子，执行顺序也应该保持先父后子。
+  //  2.用户的自定义 watcher 要优先于渲染 watcher 执行；因为用户自定义 watcher 是在渲染 watcher 之前创建的。
+  //  3.如果一个组件在父组件的 watcher 执行期间被销毁，那么它对应的 watcher 执行都可以被跳过，所以父组件的 watcher 应该先执行。
+  queue.sort((a, b) => a.id - b.id)
+
+  // do not cache length because more watchers might be pushed
+  // as we run existing watchers
+
+  //  对 queue 做遍历，拿到对应的 watcher
+  //  遍历的时候每次都会对 queue.length 求值，因为在 watcher.run() 的时候，
+  //  很可能用户会再次添加新的 watcher，这样会再次执行到 queueWatcher
+  for (index = 0; index < queue.length; index++) {
+    watcher = queue[index]
+    if (watcher.before) {
+      watcher.before()
+    }
+    id = watcher.id
+    has[id] = null
+    watcher.run()
+    // in dev build, check and stop circular updates.
+    if (process.env.NODE_ENV !== 'production' && has[id] != null) {
+      circular[id] = (circular[id] || 0) + 1
+      if (circular[id] > MAX_UPDATE_COUNT) {
+        warn(
+          'You may have an infinite update loop ' + (
+            watcher.user
+              ? `in watcher with expression "${watcher.expression}"`
+              : `in a component render function.`
+          ),
+          watcher.vm
+        )
+        break
+      }
+    }
+  }
+
+  // keep copies of post queues before resetting state
+  const activatedQueue = activatedChildren.slice()
+  const updatedQueue = queue.slice()
+
+  resetSchedulerState() //  状态恢复
+
+  // call component updated and activated hooks
+  callActivatedHooks(activatedQueue)
+  callUpdatedHooks(updatedQueue)
+
+  // devtool hook
+    /* istanbul ignore if */
+  if (devtools && config.devtools) {
+    devtools.emit('flush')
+  }
+}
+
+
+//  resetSchedulerState 函数 （ 定义在 src/core/observer/scheduler.js 中 ）
+//  作用是 把控制流程状态的一些变量恢复到初始值，把 watcher 队列清空
+
+const queue: Array<Watcher> = []
+let has: { [key: number]: ?true } = {}
+let circular: { [key: number]: number } = {}
+let waiting = false
+let flushing = false
+let index = 0
+/**
+ * Reset the scheduler's state.
+ */
+function resetSchedulerState () {
+  index = queue.length = activatedChildren.length = 0
+  has = {}
+  if (process.env.NODE_ENV !== 'production') {
+    circular = {}
+  }
+  waiting = flushing = false
+}
+
+//  watcher.run() 的逻辑 （ 定义在 src/core/observer/watcher.js 中 ）
+
+class Watcher {
+  /**
+   * Scheduler job interface.
+   * Will be called by the scheduler.
+   */
+  run () {
+    if (this.active) {
+      //  执行 this.getAndInvoke 方法，并传入 watcher 的回调函数
+      this.getAndInvoke(this.cb)
+    }
+  }
+
+  getAndInvoke (cb: Function) {
+    // 对于渲染 watcher 而言，当执行 this.get() 方法求值的时候，会执行 getter 方法
+    // 所以这就是当我们去修改组件相关的响应式数据的时候，
+    // 会触发组件重新渲染的原因，接着就会重新执行 patch 的过程
+    const value = this.get() // 通过 this.get() 得到它当前的值
+    //  如果满足新旧值不等、新值是对象类型、deep 模式任何一个条件
+    if (
+      value !== this.value ||
+      // Deep watchers and watchers on Object/Arrays should fire even
+      // when the value is the same, because the value may
+      // have mutated.
+      isObject(value) ||
+      this.deep
+    ) {
+      // set new value
+      const oldValue = this.value
+      this.value = value
+      this.dirty = false
+      if (this.user) {
+        //  注 回调函数执行的时候会把第一个和第二个参数传入新值 value 和旧值 oldValue，
+        //  这就是当我们添加自定义 watcher 的时候能在回调函数的参数中拿到新旧值的原因
+        try {
+          cb.call(this.vm, value, oldValue)
+        } catch (e) {
+          handleError(e, this.vm, `callback for watcher "${this.expression}"`)
+        }
+      } else {
+        cb.call(this.vm, value, oldValue)
+      }
+    }
+  }
+}
+
+
+
+
+
+
+</script>
+</body>
+</html>
