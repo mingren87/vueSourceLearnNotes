@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>检测变化的注意事项</title>
+</head>
+<body>
+<pre>
+    检测变化的注意事项
+
+    
+</pre>
+<script>
+//  对象添加属性
+
+//  对于使用 Object.defineProperty 实现响应式的对象，
+//  当我们去给这个对象添加一个新的属性的时候，是不能够触发它的 setter 的
+
+//  为了解决这个问题，定义了一个全局 API Vue.set 方法，定义在 src/core/global-api/index.js 中
+
+//  target 可能是数组或者是普通对象
+//  key 代表的是数组的下标或者是对象的键值
+//  val 代表添加的值
+export function set (target: Array<any> | Object, key: any, val: any): any {
+  // 判断undefined 和 基础类型的值，如果是则报错
+  if (process.env.NODE_ENV !== 'production' &&
+    (isUndef(target) || isPrimitive(target))
+  ) {
+    warn(`Cannot set reactive property on undefined, null, or primitive value: ${(target: any)}`)
+  }
+  //  判断target 是一个数组 并且 key 是一个合法的下标
+  if (Array.isArray(target) && isValidArrayIndex(key)) {
+    target.length = Math.max(target.length, key)
+    //  通过 splice 去添加进数组然后返回
+    target.splice(key, 1, val)
+    return val
+  }
+  //  判断 key 已经存在于 target 中，则直接赋值返回，因为这样的变化是观察到了
+  if (key in target && !(key in Object.prototype)) {
+    target[key] = val
+    return val
+  }
+  //  target.__ob__ 并赋值给 ob （ob 是在 Observer 的构造函数执行的时候初始化的，表示 Observer 的一个实例）
+  const ob = (target: any).__ob__
+  if (target._isVue || (ob && ob.vmCount)) {
+    process.env.NODE_ENV !== 'production' && warn(
+      'Avoid adding reactive properties to a Vue instance or its root $data ' +
+      'at runtime - declare it upfront in the data option.'
+    )
+    return val
+  }
+  //  如果 ob 不存在， 则说明 target 不是一个响应式的对象，则直接赋值并返回
+  if (!ob) {
+    target[key] = val
+    return val
+  }
+  //  defineReactive(ob.value, key, val) 把新添加的属性变成响应式对象
+  defineReactive(ob.value, key, val)
+  //  通过 ob.dep.notify() 手动的触发依赖通知
+  ob.dep.notify()
+  return val
+}
+
+
+//  在对象添加 getter 的时候有这么一段逻辑
+export function defineReactive (
+  obj: Object,
+  key: string,
+  val: any,
+  customSetter?: ?Function,
+  shallow?: boolean
+) {
+  // ...
+  let childOb = !shallow && observe(val)
+  Object.defineProperty(obj, key, {
+    enumerable: true,
+    configurable: true,
+    get: function reactiveGetter () {
+      const value = getter ? getter.call(obj) : val
+      if (Dep.target) {
+        dep.depend()
+        //  因为调用了 childOb.dep.depend() 收集了依赖，
+        //  所以Vue.set 的时候通过 ob.dep.notify() 能够通知到 watcher
+        //  从而让添加新的属性到对象也可以检测到变化
+        if (childOb) {
+          childOb.dep.depend()
+          //  value 是个数组
+          if (Array.isArray(value)) {
+            //  通过 dependArray 把数组每个元素也去做依赖收集
+            dependArray(value)
+          }
+        }
+      }
+      return value
+    },
+    // ...
+  })
+}
+
+
+//  数组
+//  对于 Vue.set 的实现，当 target 是数组的时候，也是通过 target.splice(key, 1, val) 来添加的，
+//  从而让添加的对象变成响应式的
+
+//  通过 observe 方法去观察对象的时候会实例化 Observer，
+//  在它的构造函数中是专门对数组做了处理，它的定义在 src/core/observer/index.js 中
+
+export class Observer {
+  constructor (value: any) {
+    this.value = value
+    this.dep = new Dep()
+    this.vmCount = 0
+    def(value, '__ob__', this)
+    if (Array.isArray(value)) {
+      //  hasProto 实际上就是判断对象中是否存在 __proto__
+      const augment = hasProto
+        ? protoAugment
+        : copyAugment
+      // 大部分现代浏览器都会走到 protoAugment，那么它实际上就把 value 的原型指向了 arrayMethods
+      augment(value, arrayMethods, arrayKeys)
+      this.observeArray(value)
+    } else {
+      // ...
+    }
+  }
+}
+
+//  protoAugment 作用是把 target.__proto__ 原型直接修改为 src
+function protoAugment (target, src: Object, keys: any) {
+    /* eslint-disable no-proto */
+  target.__proto__ = src
+    /* eslint-enable no-proto */
+}
+
+//  copyAugment 方法是遍历 keys，通过 def，也就是 Object.defineProperty 去定义它自身的属性值
+function copyAugment (target: Object, src: Object, keys: Array<string>) {
+  for (let i = 0, l = keys.length; i < l; i++) {
+    const key = keys[i]
+    def(target, key, src[key])
+  }
+}
+
+//  arrayMethods 方法定义在 src/core/observer/array.js 中
+
+import { def } from '../util/index'
+
+//  arrayMethods 首先继承了 Array
+const arrayProto = Array.prototype
+export const arrayMethods = Object.create(arrayProto)
+
+const methodsToPatch = [
+  'push',
+  'pop',
+  'shift',
+  'unshift',
+  'splice',
+  'sort',
+  'reverse'
+]
+
+/**
+ * Intercept mutating methods and emit events
+ */
+methodsToPatch.forEach(function (method) {
+  // cache original method
+  const original = arrayProto[method]
+  def(arrayMethods, method, function mutator (...args) {
+    const result = original.apply(this, args)
+    const ob = this.__ob__
+    // 对能增加数组长度的 3 个方法 push、unshift、splice 方法做了判断，
+    // 获取到插入的值，然后把新添加的值变成一个响应式对象，
+    // 并且再调用 ob.dep.notify() 手动触发依赖通知
+    let inserted
+    switch (method) {
+      case 'push':
+      case 'unshift':
+        inserted = args
+        break
+      case 'splice':
+        inserted = args.slice(2)
+        break
+    }
+    if (inserted) ob.observeArray(inserted)
+    // notify change
+    ob.dep.notify()
+    return result
+  })
+})
+
+//总结：
+//    1.响应式数据中对于对象的新增删除属性和数组的下标访问修改和添加数据等是观测不到的
+//    2.通过 Vue.set 以及数组的 API 可以解决这些问题，本质上它们都是内部手动去做了依赖更新的派发
+
+
+
+
+</script>
+</body>
+</html>

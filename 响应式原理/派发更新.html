@@ -284,8 +284,17 @@ class Watcher {
   }
 }
 
+//  对于渲染 watcher 而言，它在执行 this.get() 方法求值的时候，会执行 getter 方法
+updateComponent = () => {
+  vm._update(vm._render(), hydrating)
+}
+//  因此当我们去修改组件相关的响应式数据的时候，会触发组件重新渲染
+//  接着就会重新执行 patch 的过程，但它和首次渲染有所不同
 
 
+//总结：
+//    1.派发更新就是当数据发生改变后，通知所有订阅这个数据变化的 watcher 执行 updata
+//    2.派发更新的过程中会把所有要执行 updata 的 watcher 推入到队列中，在 nextTick 后执行 flush
 
 
 
